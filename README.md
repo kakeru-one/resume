@@ -93,7 +93,7 @@
 
 ---
 
-### システム構成
+### システム構成の詳細
 Sidekiqを用いた非同期処理を、ユーザーの操作を起因とするEvent-Drivenな処理と、定期実行されているSchedule-Drivenな処理に分けてそれぞれ移行しました。
 
 ### Schedule-Driven な処理の移行
@@ -117,7 +117,7 @@ Sidekiqを用いた非同期処理を、ユーザーの操作を起因とするE
   - RailsアプリケーションからGoogle Cloud Workflowsをトリガーする
   - Google Cloud Workflows のステップ内で Cloud Run Jobs を実行する
 - **同時実行数制御（スロットリング）**
-  - **DB にスロット情報を保存** し、 **Cloud Run Jobs の同時実行数を制御**
+  - DBにスロット情報を保存（workflows_locksテーブル）し、 Cloud Run Jobs の同時実行数を制御した。
   - Google Cloud Workflows から `POST /workflows/concurrency_count` を叩き、スロットに空きがあるかを判定
   - **スロットが埋まっている場合、待機中のWorkflowsがFIFOで実行されるように制御**
 - **リトライ間隔制御**
@@ -131,7 +131,7 @@ Sidekiqを用いた非同期処理を、ユーザーの操作を起因とするE
 | --- | --- |
 | `POST /workflows/callback` | 作成したcallback URLをDBに保存する。 |
 | `PUT /workflows/lock_status` | 実行が終わったジョブのスロット解放処理（Workflows の完了時に実行）|
-| `POST /workflows/concurrency_count` | 同時実行数確認に使用する。 |
+| `POST /workflows/concurrency_count` | 同時実行数確認に使用する。同時実行制御に引っかかっていない場合はworkflows_locksテーブルにレコードをINSERTする |
 
 ```mermaid
 erDiagram
@@ -194,6 +194,15 @@ sequenceDiagram
     end
 ```
 
+#### 比較検討したもの
+- Cloud Pub/Sub
+  - Dead Letter Queueがあるため、「プロセスがクラッシュした場合には同一プロセス内の処理中のメッセージが失われる」のを防げる。
+  - ACK timeoutが10分だったため選択肢から外した。
+    - 今回のジョブは実行時間が1時間を超えるものもあるため。
+- Cloud Tasks
+  - Dead Letter Queueがない。
+  - ACK timeoutが30分だったため選択肢から外した。
+    - 上記と同様に、今回のジョブは実行時間が1時間を超えるものもあるため。
 
 ---
 
@@ -204,7 +213,7 @@ sequenceDiagram
   - Sidekiq-Proの $150/月 のコストがかかるところを$10程度に抑えることができました。
 
 <!-- 検討したこと -->
-<!-- そもそものレコード数を減らすための -->
+<!-- そもそものレコード数を減らすために -->
 <!-- https://user-first.ikyu.co.jp/entry/2024/03/28/115631 -->
 
 
