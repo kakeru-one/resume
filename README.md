@@ -77,11 +77,11 @@
 # 職務経歴の詳細 / GMOビューティ株式会社（キレイパスコネクト）
 ## メモリ使用量が多いSidekiqのジョブを別の実行基盤に移行しました
 
-### 課題
+### 背景
 当初、**メモリ使用量が多いバッチ処理** は **Sidekiq** を用いて実行していましたが、以下の課題が発生しました。
 
 1. **メモリ使用量の問題**
-   - 予約時間枠などの数十億を超えるレコード数のテーブルを更新処理するジョブの増加により、Sidekiqを実行するRailsアプリケーションのメモリ使用量が増大していた。
+   - `ある日付の特定の時間に対する空き枠`などの数十億を超えるレコード数のテーブルを更新処理するジョブの増加により、Sidekiqを実行するRailsアプリケーションのメモリ使用量が増大していた。
    - 一部のジョブは Sidekiqのメモリ制限を超え、OOM Killerによってプロセスが強制終了されることがあった。
     - 無料版のSidekiqをマルチスレッド環境下で動かしていたので、プロセスがクラッシュした場合には同一プロセス内の処理中のメッセージはすべて失われてしまっていた。
    - 上記で述べたメモリ使用量が大きいジョブの実行が失敗することによって、その結果を待つユーザーをかなり待たせることになってしまっていた。
@@ -89,7 +89,7 @@
 2. **Sidekiq-Pro のコスト**
    - OOM Killerによって強制終了されたRedisのキューがジョブが完了するまで削除されないように、**Sidekiq-Pro（$99/月 ≒ 約15,000円）** の導入を検討したが、組織にとってはコストが高く、尚且つジョブの成功結果を待つユーザーの待ち時間は解消できなさそうだった。
 
-このような課題から、**Sidekiq以外の基盤でバッチ処理を実行する仕組み** を検討しました。
+このような背景から、**Sidekiq以外の基盤でバッチ処理を実行する仕組み** を検討しました。
 
 ---
 
@@ -98,29 +98,27 @@ Sidekiqを用いた非同期処理を、ユーザーの操作を起因とするE
 
 ### Schedule-Driven な処理の移行
 #### システム構成図
+簡略化すると以下のようなシステム構成になります。エラー通知にはCloud Run Functionsを用いていますが、割愛しています。
 <img src="img/schedule-driven.png" width="1500px" alt="スケジュールドリブン">
 
 #### 概要
-**（Cloud Scheduler + Workflows + Cloud Run Jobs）**
 - **ジョブのスケジュール実行**
-  - **Cloud Scheduler が Cloud Run ServiceのRailsのエンドポイントに対して、HTTPリクエスト を定期実行**
-  - **Workflows が Cloud Run Jobs を実行**
-- **リトライロジックの考案**
-  - Workflows 内で `POST /workflows/retry_intervals` を叩き、動的にリトライ間隔を調整
-  - 時間経過ごとにリトライ間隔を動的に設定できる設計にしました。
-    - e.g. 指数バックオフ
+  1. Cloud Scheduler が Cloud Run ServiceのRailsのエンドポイントに対して、HTTPリクエスト を定期実行
+  2. Cloud Run ServiceのRailsのエンドポイント内でGoogle Cloud Workflowsを実行する
+  3. Google Cloud Workflows のステップ内で Cloud Run Jobs を実行する
 
 ### Event-Driven な処理の移行
 #### システム構成図
+簡略化すると以下のようなシステム構成になります。エラー通知にはCloud Run Functionsを用いていますが、割愛しています。
 <img src="img/event-driven.png" width="1500px" alt="スケジュールドリブン">
 
 #### 概要
 - **ジョブの実行トリガー**
-  - Railsアプリケーションから **Google Cloud Workflows をトリガー**
-  - **Workflows が Cloud Run Jobs を実行**
+  - RailsアプリケーションからGoogle Cloud Workflowsをトリガーする
+  - Google Cloud Workflows のステップ内で Cloud Run Jobs を実行する
 - **同時実行数制御（スロットリング）**
   - **DB にスロット情報を保存** し、 **Cloud Run Jobs の同時実行数を制御**
-  - Workflows から `POST /workflows/concurrency_count` を叩き、スロットに空きがあるかを判定
+  - Google Cloud Workflows から `POST /workflows/concurrency_count` を叩き、スロットに空きがあるかを判定
   - **スロットが埋まっている場合、待機中のWorkflowsがFIFOで実行されるように制御**
 - **リトライ間隔制御**
   - Workflows 内で `POST /workflows/retry_intervals` を叩き、動的にリトライ間隔を調整
@@ -156,6 +154,8 @@ erDiagram
 
 #### 工夫したところ
 スロットリングにおいて、同時実行するユーザーが1000人以上いたとしても、同時実行数の制限によって待たされる時間が最小限になるようなフローを設計しました。
+WorkflowsとRailsサーバー間のポーリングに同時実行数の空き状況の確認ではなく、`events.await_callback`を用いたのはコスト削減のためです。
+（Workflowsの料金はステップ数によって従量課金されるため。）
 詳細は以下の通りです。
 ```mermaid
 sequenceDiagram
@@ -204,7 +204,7 @@ sequenceDiagram
   - Sidekiq-Proの $150/月 のコストがかかるところを$10程度に抑えることができました。
 
 <!-- 検討したこと -->
-<!-- そもそものレコード数を減らす -->
+<!-- そもそものレコード数を減らすための -->
 <!-- https://user-first.ikyu.co.jp/entry/2024/03/28/115631 -->
 
 
