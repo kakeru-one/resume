@@ -95,6 +95,8 @@
 
 ### システム構成の詳細
 Sidekiqを用いた非同期処理を、ユーザーの操作を起因とするEvent-Drivenな処理と、定期実行されているSchedule-Drivenな処理に分けてそれぞれ移行しました。
+どちらもGoogle Cloud WorkflowsからCloud Run Jobsを起動してバックグラウンド処理するのは共通です。
+また、Cloud Run Jobs内ではrakeタスクを実行してバックグラウンド処理を実現します。
 
 ### Schedule-Driven な処理の移行
 #### システム構成図
@@ -153,10 +155,39 @@ erDiagram
 
 
 #### 工夫したところ
-- 他のメンバーも保守しやすいように、Google Cloud Workflowsのyaml定義はなるべく変更しないで済むように、Sidekiqのようにrubyのコードで動的に設定できるようにしました。
+- 他のメンバーも保守しやすいように、Google Cloud Workflowsのyaml定義はなるべく変更しないで済むように、SidekiqのようにRubyコードで動的に設定できるようにしました。
   - リトライ間隔の設定
   - リトライ回数
   - スロットリングの設定(同時実行数, ttl)
+  - イベントドリブンか、スケジュールドリブンか、の指定
+  - Cloud Run Jobs上で実行するrakeタスク名
+  <details>
+
+  <summary>Rubyコードのイメージ</summary>
+
+  ```ruby
+  # HogeWorkflowsは具象クラス。BaseWorkflowsは基底クラスで、DSLを実現するための処理が書かれている想定。
+  class HogeWorkflows < BaseWorkflows
+    # イベントドリブンか、スケジュールドリブンか指定できる
+    workflow_type :event_driven
+
+    # Cloud Run Jobs上で実行するrakeタスク名を指定できる
+    rake_task "workflows:hoge"
+
+    # リトライカウント
+    retry_options({ count: 12 })
+
+    # リトライ間隔の式を指定できる
+    retry_interval do
+      (10.minutes + rand((-1.minute)..(1.minute))).to_i
+    end
+
+    # 同時実行制御を指定できる
+    concurrency_options({ limit: 2, ttl: 10.minutes })
+  end
+  ```
+  </details>
+
 - スロットリングにおいて、同時実行するユーザーが1000人以上いたとしても、同時実行数の制限によって待たされる時間が最小限になるようなフローを設計しました。
   - WorkflowsとRailsサーバー間のポーリングに同時実行数の空き状況の確認ではなく、`events.await_callback`を用いたのはコスト削減のためです。（Workflowsの料金はステップ数によって従量課金されるため。）
   - 詳細は以下の通りです。
